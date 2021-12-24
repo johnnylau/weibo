@@ -17,6 +17,8 @@ class Weibo:
         self.WEIBO_ID = config.get("CONFIG", "WEIBO_ID")
         self.TELEGRAM_BOT_TOKEN = config.get("CONFIG", "TELEGRAM_BOT_TOKEN")
         self.TELEGRAM_CHAT_ID = config.get("CONFIG", "TELEGRAM_CHAT_ID")
+        self.FAV_ID = config.get("CONFIG", "FAV_ID")
+        self.COOKIES = config.get("CONFIG", "COOKIES")
         self.SESSION = HTMLSession()
         self.SESSION.adapters.DEFAULT_RETRIES = 5  # 增加重连次数
         self.SESSION.keep_alive = False  # 关闭多余连接
@@ -46,7 +48,7 @@ class Weibo:
         url = f'https://api.telegram.org/bot{self.TELEGRAM_BOT_TOKEN}/sendPhoto'
         data = dict(chat_id=f"{self.TELEGRAM_CHAT_ID}&", photo=img_url)
 
-        self.SESSION.post(url, data=data, proxies=self.PROXIES)
+        self.SESSION.post(url, data=data, proxies=self.PROXIES)        
 
     def parse_weibo(self, weibo):
         """
@@ -108,40 +110,63 @@ class Weibo:
                 print('【错误】代理无法访问到电报服务器')
         except:
             print('【错误】代理无法访问到电报服务器')
-        
+
+    def process_imgs(self, item):
+        pics = {}
+        try:
+            if 'pic_num' in item and item.get('pic_num') > 0:
+                pics = [pic['large']['url'] for pic in item['pics']]
+            else:
+                pics = []
+        except Exception as e:
+            print('解析出错'%e)
+            pics = []
+        finally:
+            return pics
+
+    def process_card(self, cards):
+        for item in cards:
+            weibo = {}
+
+            weibo['title'] = BeautifulSoup(item['mblog']['text'].replace('<br />', '\n'), 'html.parser').get_text()
+
+            if 'retweeted_status' in item['mblog']:
+                retweet = item['mblog']['retweeted_status']
+                weibo['pics'] = self.process_imgs(retweet)
+                try:
+                    weibo['title'] = f"{weibo['title']}//@{retweet['user']['screen_name']}:{retweet['text']}"
+                except:
+                    weibo['title'] = f"{weibo['title']}//转发原文不可见，可能已被删除"
+            else:
+                weibo['pics'] = self.process_imgs(item['mblog'])
+
+            short_url = item['scheme']
+            weibo['link'] = short_url
+
+            self.parse_weibo(weibo)
 
     def run(self):
         print(time.strftime('%Y-%m-%d %H:%M:%S 执行完毕', time.localtime()))
 
         url = f'https://m.weibo.cn/api/container/getIndex?containerid=107603{self.WEIBO_ID}'
+        favurl = f'https://m.weibo.cn/api/container/getIndex?containerid={self.FAV_ID}&page=1&openapp=0'
+
+        headers = {
+            'Referer': f'https://m.weibo.cn/p/index?containerid={self.FAV_ID}',
+            'User-Agent':
+                f'Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1',
+            'Cookie': self.COOKIES,
+            'X-Requested-With': f'XMLHttpRequest'
+        }
 
         try:
             weibo_items = self.SESSION.get(url).json()['data']['cards'][::-1]
-        except:
-            print('    |-访问url出错了')
+            self.process_card(weibo_items)
+            fav_items = self.SESSION.get(favurl, headers=headers).json()['data']['cards'][::-1]
+            self.process_card(fav_items)
+        except Exception as e:
+            print('    |-访问url出错了'%e)
 
-        for item in weibo_items:
-            weibo = {}
-
-            weibo['title'] = BeautifulSoup(item['mblog']['text'].replace('<br />', '\n'), 'html.parser').get_text()
-
-            if item['mblog'].get('weibo_position') == 3:  # 如果状态为3表示转发微博，附加上转发链，状态1为原创微博
-                retweet = item['mblog']['retweeted_status']
-                try:
-                    weibo['title'] = f"{weibo['title']}//@{retweet['user']['screen_name']}:{retweet['raw_text']}"
-                except:
-                    weibo['title'] = f"{weibo['title']}//转发原文不可见，可能已被删除"
-
-            try:
-                weibo['pics'] = [pic['large']['url'] for pic in item['mblog']['pics']]
-            except:
-                weibo['pics'] = []
-
-            short_url = item['scheme']
-            short_url = short_url[short_url.rindex('/') + 1:short_url.index('?')]
-            weibo['link'] = f'https://weibo.com/{self.WEIBO_ID}/{short_url}'
-
-            self.parse_weibo(weibo)
 
 
 if __name__ == '__main__':
