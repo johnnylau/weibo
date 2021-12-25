@@ -4,11 +4,15 @@ import time
 import wget
 import sqlite3
 import configparser
+import re
+import json
 from bs4 import BeautifulSoup
 from requests_html import HTMLSession
 
 
 class Weibo:
+    status_id = -1
+    root = "https://m.weibo.cn"
 
     def __init__(self):
         self.BASE_DIR = os.path.split(os.path.realpath(__file__))[0]
@@ -110,10 +114,33 @@ class Weibo:
         except:
             print('【错误】代理无法访问到电报服务器')
 
+    def get_status_id(self, scheme):
+        pattern = (r"(?:https?://)?(?:www\.|m\.)?weibo\.c(?:om|n)"
+               r"/(?:detail|status|\d+)/(\w+)")
+        mGroup = re.match(pattern, scheme)
+        self.status_id = mGroup.group(1)
+
+    def extract(self, txt, begin, end, pos=0):
+        try:
+            first = txt.index(begin, pos) + len(begin)
+            last = txt.index(end, first)
+            return txt[first:last], last+len(end)
+        except (ValueError, TypeError, AttributeError) as e:
+            print(e)
+            return None, pos
+
+    def process_images_over_than_9(self):
+        url = "{}/detail/{}".format(self.root, self.status_id)
+        page = self.send_request(url).text
+        data = self.extract(page, "var $render_data = [", "][0] || {};")[0]
+        return json.loads(data)["status"] if data else None
+
     def process_imgs(self, item):
         pics = {}
         try:
             if 'pic_num' in item and item.get('pic_num') > 0:
+                if len(item['pics']) < item['pic_num']:
+                    item = self.process_images_over_than_9()
                 pics = [pic['large']['url'] for pic in item['pics']]
             else:
                 pics = []
@@ -126,6 +153,9 @@ class Weibo:
     def process_card(self, cards):
         for item in cards:
             weibo = {}
+            retweet = {}
+            weibo['link'] = item['scheme']
+            self.get_status_id(item['scheme'])
 
             weibo['title'] = BeautifulSoup(item['mblog']['text'].replace('<br />', '\n'), 'html.parser').get_text()
 
@@ -139,9 +169,6 @@ class Weibo:
             else:
                 weibo['pics'] = self.process_imgs(item['mblog'])
 
-            short_url = item['scheme']
-            weibo['link'] = short_url
-
             self.parse_weibo(weibo)
 
     def run(self):
@@ -150,6 +177,16 @@ class Weibo:
         url = f'https://m.weibo.cn/api/container/getIndex?containerid=107603{self.WEIBO_ID}'
         favurl = f'https://m.weibo.cn/api/container/getIndex?containerid={self.FAV_ID}&page=1&openapp=0'
 
+        try:
+            weibo_items = self.SESSION.get(url).json()['data']['cards'][::-1]
+            self.process_card(weibo_items)
+            fav_items = self.send_request(favurl, True).json()['data']['cards'][::-1]
+            self.process_card(fav_items)
+        except Exception as e:
+            print('    |-访问url出错了'%e)
+
+    def send_request(self, url, enableHeaders=False):
+        result = {}
         headers = {
             'Referer': f'https://m.weibo.cn/p/index?containerid={self.FAV_ID}',
             'User-Agent':
@@ -159,13 +196,14 @@ class Weibo:
         }
 
         try:
-            weibo_items = self.SESSION.get(url).json()['data']['cards'][::-1]
-            self.process_card(weibo_items)
-            fav_items = self.SESSION.get(favurl, headers=headers).json()['data']['cards'][::-1]
-            self.process_card(fav_items)
+            if enableHeaders:
+                result = self.SESSION.get(url, headers=headers)
+            else:
+                result = self.SESSION.get(url)
         except Exception as e:
             print('    |-访问url出错了'%e)
-
+        finally:
+            return result
 
 
 if __name__ == '__main__':
